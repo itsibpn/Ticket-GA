@@ -10,15 +10,12 @@ echo "=========================================================="
 echo "    GA Ticket App - Automated Deploy & DB Integrator      "
 echo "=========================================================="
 
-PROJECT_DIR="/var/www/ga-ticket-app"
+# Detect project directory dynamically based on script location
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+PROJECT_DIR="$SCRIPT_DIR"
 
-# Ensure we are running inside the correct root directory
-if [ -d "$PROJECT_DIR" ]; then
-    cd "$PROJECT_DIR"
-else
-    echo "[ERROR] Direktori $PROJECT_DIR tidak ditemukan!"
-    exit 1
-fi
+cd "$PROJECT_DIR"
+echo "[SYSTEM] Direktori Proyek Terdeteksi: $PROJECT_DIR"
 
 # 1. Check if PostgreSQL database is configured, if not trigger setup_postgres.sh
 ENV_PATH="./backend/.env"

@@ -33,9 +33,12 @@ sudo -u postgres psql -c "CREATE USER ga_user WITH PASSWORD 'ga_secure_password_
 sudo -u postgres psql -c "ALTER USER ga_user WITH PASSWORD 'ga_secure_password_2026';"
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ga_tickets TO ga_user;"
 
+# Detect project directory dynamically based on script location
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
 # 3. Seed Schema and default BUMN data
 echo "[DB] Mengimpor schema.sql & data awal (seeding)..."
-SCHEMA_PATH="/var/www/ga-ticket-app/backend/schema.sql"
+SCHEMA_PATH="$SCRIPT_DIR/backend/schema.sql"
 if [ -f "$SCHEMA_PATH" ]; then
     # Set search_path and grant permissions on schema
     sudo -u postgres psql -d ga_tickets -f "$SCHEMA_PATH"
@@ -49,8 +52,8 @@ fi
 
 # 4. Generate backend production .env file
 echo "[SYSTEM] Memperbarui konfigurasi variabel lingkungan backend (.env)..."
-ENV_PATH="/var/www/ga-ticket-app/backend/.env"
-mkdir -p /var/www/ga-ticket-app/backend
+ENV_PATH="$SCRIPT_DIR/backend/.env"
+mkdir -p "$SCRIPT_DIR/backend"
 
 # Create production .env config
 cat <<EOT > "$ENV_PATH"
