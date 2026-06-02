@@ -59,6 +59,47 @@ export default function App() {
   const [selectedApprTicketId, setSelectedApprTicketId] = useState(null);
   const [apprCommentInput, setApprCommentInput] = useState('');
   const [expandedWebhookId, setExpandedWebhookId] = useState(null);
+  const [selectedAssetId, setSelectedAssetId] = useState(null);
+  const [showBorrowAssetModal, setShowBorrowAssetModal] = useState(false);
+  const [borrowAssetMulai, setBorrowAssetMulai] = useState(new Date().toISOString().substring(0, 10));
+  const [borrowAssetKembali, setBorrowAssetKembali] = useState(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().substring(0, 10));
+  const [borrowAssetTujuan, setBorrowAssetTujuan] = useState('');
+
+  // QR Code, Scanner, and Beep Synthesis States
+  const [stickerFormat, setStickerFormat] = useState('barcode'); // 'barcode' or 'qrcode'
+  const [showScannerModal, setShowScannerModal] = useState(false);
+  const [scannerInputVal, setScannerInputVal] = useState('');
+
+  const playScanBeep = (isSuccess = true) => {
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return;
+      const ctx = new AudioContextClass();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      
+      if (isSuccess) {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(1200, ctx.currentTime);
+        gain.gain.setValueAtTime(0.15, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.12);
+      } else {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(180, ctx.currentTime);
+        gain.gain.setValueAtTime(0.2, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.25);
+      }
+    } catch (err) {
+      console.warn('Audio Context beep failed:', err);
+    }
+  };
 
   const [editingUser, setEditingUser] = useState(null);
   const [editUserName, setEditUserName] = useState('');
@@ -75,18 +116,54 @@ export default function App() {
   const [newFacilityCategory, setNewFacilityCategory] = useState('room');
   const [newFacilityName, setNewFacilityName] = useState('');
 
-  // Quick borrow helper
+  // Direct asset borrow helpers
   const handleQuickBorrowAsset = (asset) => {
-    setTicketType('alat');
-    setFormData({
-      aset: `${asset.code} (${asset.name})`,
-      mulai: new Date().toISOString().substring(0, 10),
-      kembali: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().substring(0, 10),
-      tujuan: ''
-    });
-    setFormStep(1);
-    setCurrentTab('buat');
-    addToast('ok', `Form peminjaman ${asset.name} telah disiapkan!`, 'ti-tool');
+    setSelectedAssetId(asset.id);
+    setBorrowAssetMulai(new Date().toISOString().substring(0, 10));
+    setBorrowAssetKembali(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().substring(0, 10));
+    setBorrowAssetTujuan('');
+    setShowBorrowAssetModal(true);
+  };
+
+  const handleDirectBorrowAsset = async (e) => {
+    e.preventDefault();
+    const asset = assets.find(a => a.id === selectedAssetId);
+    if (!asset) return;
+
+    const ticketId = `TKT-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+    const desc = `Peminjaman Aset: ${asset.name} (${asset.code})`;
+
+    try {
+      const res = await apiFetch(`${API_URL}/tickets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          id: ticketId,
+          user_id: currentUser.id,
+          type: 'alat',
+          description: desc,
+          budget: 0,
+          detail: {
+            aset: `${asset.code} (${asset.name})`,
+            mulai: borrowAssetMulai,
+            kembali: borrowAssetKembali,
+            tujuan: borrowAssetTujuan
+          }
+        })
+      });
+
+      if (res.ok) {
+        addToast('ok', `Peminjaman ${asset.name} berhasil diajukan! Menunggu approval.`, 'ti-tool');
+        setShowBorrowAssetModal(false);
+        setBorrowAssetTujuan('');
+        setSelectedAssetId(null);
+        fetchAllData();
+      } else {
+        const errData = await res.json();
+        addToast('err', errData.error || 'Gagal mengajukan peminjaman.', 'ti-x');
+      }
+    } catch (err) {
+      addToast('err', 'Terjadi kesalahan jaringan.', 'ti-x');
+    }
   };
   const [dashboardStats, setDashboardStats] = useState({
     activeTickets: 0, pendingTickets: 0, approvedThisMonth: 0, remainingBudget: 0, allocatedBudget: 40000000.00, avgSlaDays: "1.2", recentTickets: []
@@ -600,6 +677,7 @@ export default function App() {
       const res = await apiFetch(`${API_URL}/assets/${id}`, { method: 'DELETE' });
       if (res.ok) {
         addToast('err', 'Aset berhasil dihapus.', 'ti-trash');
+        setSelectedAssetId(null);
         fetchAllData();
       }
     } catch (err) {}
@@ -2186,193 +2264,124 @@ export default function App() {
         )}
 
         {/* --- 7. MASTER ASET TAB --- */}
-        {currentTab === 'aset' && (
-          <div className="page-view animate">
-            <div className="pg-hd">
-              <div>
-                <h1 className="pg-title">Katalog & Master Aset GA</h1>
-                <div className="pg-sub">Manajemen inventaris, peminjaman operasional, dan log pelacakan kondisi aset korporat</div>
-              </div>
-            </div>
-
-            {/* Asset statistics counters */}
-            <div className="stat-grid" style={{ marginBottom: '16px' }}>
-              <div className="stat">
-                <div className="stat-lbl">Total Aset Inventaris</div>
-                <div className="stat-val" style={{ color: 'var(--blu)' }}>{statTotal}</div>
-                <div className="stat-delta">Terdaftar dalam Sistem</div>
-              </div>
-              <div className="stat">
-                <div className="stat-lbl">Aset Tersedia</div>
-                <div className="stat-val" style={{ color: 'var(--grn)' }}>{statAvailable}</div>
-                <div className="stat-delta">Siap untuk Dipinjam</div>
-              </div>
-              <div className="stat">
-                <div className="stat-lbl">Sedang Dipinjam</div>
-                <div className="stat-val" style={{ color: 'var(--red)' }}>{statBorrowed}</div>
-                <div className="stat-delta">Dalam Penggunaan Staf</div>
-              </div>
-              <div className="stat">
-                <div className="stat-lbl">Dalam Perbaikan</div>
-                <div className="stat-val" style={{ color: 'var(--amb)' }}>{statServis}</div>
-                <div className="stat-delta">Pemeliharaan / Servis</div>
-              </div>
-            </div>
-
-            {/* Interactive searching, filtering & sorting control row */}
-            <div className="filter-row card" style={{ padding: '16px 20px', display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap' }}>
-              <div style={{ flex: 1, minWidth: '240px', position: 'relative' }}>
-                <i className="ti ti-search" style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--hi)' }}></i>
-                <input 
-                  type="text" 
-                  placeholder="Cari kode register atau nama aset..." 
-                  value={assetSearchQuery}
-                  onChange={(e) => setAssetSearchQuery(e.target.value)}
-                  style={{ paddingLeft: '32px', height: '36px' }}
-                />
-              </div>
-
-              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                  <span style={{ fontSize: '10px', color: 'var(--mu)', fontWeight: 'bold' }}>Kategori</span>
-                  <select value={assetCategoryFilter} onChange={(e) => setAssetCategoryFilter(e.target.value)} style={{ width: '130px', height: '32px', padding: '2px 8px' }}>
-                    <option value="Semua">Semua</option>
-                    <option value="Elektronik">Elektronik</option>
-                    <option value="Kendaraan">Kendaraan</option>
-                    <option value="Perabot">Perabot</option>
-                    <option value="Perlengkapan">Perlengkapan</option>
-                  </select>
+        {currentTab === 'aset' && (() => {
+          const selectedAsset = assets.find(a => a.id === selectedAssetId) || (filteredAndSortedAssets.length > 0 ? filteredAndSortedAssets[0] : null);
+          return (
+            <div className="page-view animate">
+              <div className="pg-hd">
+                <div>
+                  <h1 className="pg-title">Katalog & Master Aset GA</h1>
+                  <div className="pg-sub">Manajemen inventaris, peminjaman operasional, dan log pelacakan kondisi aset korporat</div>
                 </div>
+              </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                  <span style={{ fontSize: '10px', color: 'var(--mu)', fontWeight: 'bold' }}>Kondisi</span>
-                  <select value={assetConditionFilter} onChange={(e) => setAssetConditionFilter(e.target.value)} style={{ width: '110px', height: '32px', padding: '2px 8px' }}>
-                    <option value="Semua">Semua</option>
-                    <option value="Baik">Baik</option>
-                    <option value="Servis">Servis</option>
-                    <option value="Rusak">Rusak</option>
-                  </select>
+              {/* Asset statistics counters */}
+              <div className="stat-grid" style={{ marginBottom: '16px' }}>
+                <div className="stat">
+                  <div className="stat-lbl">Total Aset Inventaris</div>
+                  <div className="stat-val" style={{ color: 'var(--blu)' }}>{statTotal}</div>
+                  <div className="stat-delta">Terdaftar dalam Sistem</div>
                 </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                  <span style={{ fontSize: '10px', color: 'var(--mu)', fontWeight: 'bold' }}>Urutkan</span>
-                  <select value={assetSortKey} onChange={(e) => setAssetSortKey(e.target.value)} style={{ width: '110px', height: '32px', padding: '2px 8px' }}>
-                    <option value="name">Nama</option>
-                    <option value="code">Kode</option>
-                    <option value="category">Kategori</option>
-                    <option value="status">Status</option>
-                  </select>
+                <div className="stat">
+                  <div className="stat-lbl">Aset Tersedia</div>
+                  <div className="stat-val" style={{ color: 'var(--grn)' }}>{statAvailable}</div>
+                  <div className="stat-delta">Siap untuk Dipinjam</div>
                 </div>
+                <div className="stat">
+                  <div className="stat-lbl">Sedang Dipinjam</div>
+                  <div className="stat-val" style={{ color: 'var(--red)' }}>{statBorrowed}</div>
+                  <div className="stat-delta">Dalam Penggunaan Staf</div>
+                </div>
+                <div className="stat">
+                  <div className="stat-lbl">Dalam Perbaikan</div>
+                  <div className="stat-val" style={{ color: 'var(--amb)' }}>{statServis}</div>
+                  <div className="stat-delta">Pemeliharaan / Servis</div>
+                </div>
+              </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                  <span style={{ fontSize: '10px', color: 'var(--mu)', fontWeight: 'bold' }}>Arah</span>
+              {/* Interactive searching, filtering & sorting control row */}
+              <div className="filter-row card" style={{ padding: '16px 20px', display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', gap: '8px', flex: 1, minWidth: '240px' }}>
+                  <div style={{ flex: 1, position: 'relative' }}>
+                    <i className="ti ti-search" style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--hi)' }}></i>
+                    <input 
+                      type="text" 
+                      placeholder="Cari kode register atau nama aset..." 
+                      value={assetSearchQuery}
+                      onChange={(e) => setAssetSearchQuery(e.target.value)}
+                      style={{ paddingLeft: '32px', height: '36px' }}
+                    />
+                  </div>
                   <button 
-                    className="btn btn-sm" 
-                    onClick={() => setAssetSortOrder(assetSortOrder === 'asc' ? 'desc' : 'asc')}
-                    style={{ height: '32px', minWidth: '40px', padding: '0 8px', border: '1px solid var(--bd2)' }}
+                    type="button" 
+                    className="btn btn-primary" 
+                    onClick={() => {
+                      setShowScannerModal(true);
+                      setScannerInputVal('');
+                    }}
+                    style={{ height: '36px', display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap', background: 'linear-gradient(135deg, var(--blu), #1e3a8a)', borderColor: 'var(--blu)' }}
                   >
-                    {assetSortOrder === 'asc' ? '↑ Asc' : '↓ Desc'}
+                    <i className="ti ti-scan"></i> Scan Aset
                   </button>
                 </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                  <span style={{ fontSize: '10px', color: 'var(--mu)', fontWeight: 'bold' }}>Tampilan</span>
-                  <div style={{ display: 'flex', gap: '2px', background: 'var(--surf2)', padding: '2px', borderRadius: '6px', border: '1px solid var(--bd2)' }}>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                    <span style={{ fontSize: '10px', color: 'var(--mu)', fontWeight: 'bold' }}>Kategori</span>
+                    <select value={assetCategoryFilter} onChange={(e) => setAssetCategoryFilter(e.target.value)} style={{ width: '130px', height: '32px', padding: '2px 8px' }}>
+                      <option value="Semua">Semua</option>
+                      <option value="Elektronik">Elektronik</option>
+                      <option value="Kendaraan">Kendaraan</option>
+                      <option value="Perabot">Perabot</option>
+                      <option value="Perlengkapan">Perlengkapan</option>
+                    </select>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                    <span style={{ fontSize: '10px', color: 'var(--mu)', fontWeight: 'bold' }}>Kondisi</span>
+                    <select value={assetConditionFilter} onChange={(e) => setAssetConditionFilter(e.target.value)} style={{ width: '110px', height: '32px', padding: '2px 8px' }}>
+                      <option value="Semua">Semua</option>
+                      <option value="Baik">Baik</option>
+                      <option value="Servis">Servis</option>
+                      <option value="Rusak">Rusak</option>
+                    </select>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                    <span style={{ fontSize: '10px', color: 'var(--mu)', fontWeight: 'bold' }}>Urutkan</span>
+                    <select value={assetSortKey} onChange={(e) => setAssetSortKey(e.target.value)} style={{ width: '110px', height: '32px', padding: '2px 8px' }}>
+                      <option value="name">Nama</option>
+                      <option value="code">Kode</option>
+                      <option value="category">Kategori</option>
+                      <option value="status">Status</option>
+                    </select>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                    <span style={{ fontSize: '10px', color: 'var(--mu)', fontWeight: 'bold' }}>Arah</span>
                     <button 
-                      className={`btn btn-sm ${assetViewMode === 'grid' ? 'btn-primary' : ''}`} 
-                      onClick={() => setAssetViewMode('grid')}
-                      style={{ height: '28px', padding: '0 8px', borderRadius: '4px', border: 'none' }}
-                      title="Tampilan Kartu"
+                      className="btn btn-sm" 
+                      onClick={() => setAssetSortOrder(assetSortOrder === 'asc' ? 'desc' : 'asc')}
+                      style={{ height: '32px', minWidth: '40px', padding: '0 8px', border: '1px solid var(--bd2)' }}
                     >
-                      <i className="ti ti-grid-dots"></i>
-                    </button>
-                    <button 
-                      className={`btn btn-sm ${assetViewMode === 'table' ? 'btn-primary' : ''}`} 
-                      onClick={() => setAssetViewMode('table')}
-                      style={{ height: '28px', padding: '0 8px', borderRadius: '4px', border: 'none' }}
-                      title="Tampilan Tabel"
-                    >
-                      <i className="ti ti-list"></i>
+                      {assetSortOrder === 'asc' ? '↑ Asc' : '↓ Desc'}
                     </button>
                   </div>
                 </div>
               </div>
-            </div>
 
-            <div className="split">
-              {/* Left Column: catalog view */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                
-                {assetViewMode === 'grid' ? (
-                  /* Grid Card View Layout */
-                  <div className="asset-grid">
-                    {filteredAndSortedAssets.map(a => {
-                      let catColorClass = a.category === 'Elektronik' ? 'cat-elec' 
-                                       : a.category === 'Kendaraan' ? 'cat-car' 
-                                       : a.category === 'Perabot' ? 'cat-furn' 
-                                       : 'cat-prop';
-                      
-                      let catIcon = a.category === 'Elektronik' ? 'ti-device-laptop'
-                                  : a.category === 'Kendaraan' ? 'ti-car'
-                                  : a.category === 'Perabot' ? 'ti-chair'
-                                  : 'ti-package';
-                      
-                      return (
-                        <div className="asset-card animate" key={a.id}>
-                          <div className={`asset-avatar ${catColorClass}`}>
-                            <i className={`ti ${catIcon}`} aria-hidden="true"></i>
-                          </div>
-                          
-                          <div className="asset-card-body">
-                            <span className="asset-cat-tag">{a.category}</span>
-                            <h3 className="asset-title-text">{a.name}</h3>
-                            <div className="asset-code-container">
-                              <code>{a.code}</code>
-                            </div>
-                            
-                            <div style={{ display: 'flex', gap: '6px', marginTop: '10px', alignItems: 'center' }}>
-                              <span className={`chip chip-${a.status === 'Tersedia' ? 'ok' : 'no'}`} style={{ fontSize: '10px', padding: '2px 6px' }}>
-                                {a.status}
-                              </span>
-                              <span className={`asset-cond-badge cond-${a.condition.toLowerCase()}`}>
-                                {a.condition}
-                              </span>
-                            </div>
-                          </div>
-                          
-                          <div className="asset-card-footer">
-                            <button className="btn btn-sm btn-icon-only" onClick={() => setShowBarcodePrint(a)} title="Cetak Sticker Barcode">
-                              <i className="ti ti-printer" aria-hidden="true"></i>
-                            </button>
-                            {isSuperAdmin && (
-                              <button className="btn btn-sm btn-icon-only btn-warn" onClick={() => handleStartEditAsset(a)} title="Edit Detail Aset">
-                                <i className="ti ti-edit" aria-hidden="true"></i>
-                              </button>
-                            )}
-                            {a.status === 'Tersedia' ? (
-                              <button className="btn btn-sm btn-ok pulsing-btn" onClick={() => handleQuickBorrowAsset(a)} style={{ flex: 1 }}>
-                                <i className="ti ti-hand-finger" aria-hidden="true"></i> Pinjam Aset
-                              </button>
-                            ) : (
-                              <button className="btn btn-sm" disabled style={{ flex: 1, opacity: 0.5, cursor: 'not-allowed' }}>
-                                <i className="ti ti-ban" aria-hidden="true"></i> Terpakai
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {filteredAndSortedAssets.length === 0 && (
-                      <div className="empty" style={{ gridColumn: 'span 2' }}>
-                        <i className="ti ti-box" aria-hidden="true"></i> Tidak ada aset inventaris yang cocok.
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  /* Compact Table View Layout */
-                  <div className="card" style={{ marginBottom: 0 }}>
-                    <table>
-                      <colgroup><col style={{ width: '130px' }}/><col/><col style={{ width: '110px' }}/><col style={{ width: '100px' }}/><col style={{ width: '130px' }}/><col style={{ width: '120px' }}/></colgroup>
+              <div className="split">
+                {/* Left Column: High-density Table of Assets */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  <div className="card animate" style={{ padding: '0', overflow: 'hidden', border: '1px solid var(--bd2)' }}>
+                    <table style={{ margin: 0 }}>
+                      <colgroup>
+                        <col style={{ width: '130px' }}/>
+                        <col/>
+                        <col style={{ width: '110px' }}/>
+                        <col style={{ width: '90px' }}/>
+                        <col style={{ width: '110px' }}/>
+                      </colgroup>
                       <thead>
                         <tr>
                           <th>Kode Aset</th>
@@ -2380,296 +2389,498 @@ export default function App() {
                           <th>Kategori</th>
                           <th>Kondisi</th>
                           <th>Status</th>
-                          <th>Aksi</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredAndSortedAssets.map(a => (
-                          <tr key={a.id}>
-                            <td style={{ fontFamily: 'monospace', fontSize: '11.5px', fontWeight: 'bold' }}>{a.code}</td>
-                            <td style={{ fontWeight: '600' }}>{a.name}</td>
-                            <td><span className="type-chip">{a.category}</span></td>
-                            <td>
-                              <span className={`asset-cond-badge cond-${a.condition.toLowerCase()}`}>
-                                {a.condition}
-                              </span>
-                            </td>
-                            <td>
-                              <span className={`chip chip-${a.status === 'Tersedia' ? 'ok' : 'no'}`} style={{ fontSize: '11px', padding: '2px 8px', fontWeight: 'bold' }}>
-                                {a.status}
-                              </span>
-                            </td>
-                            <td>
-                              <div style={{ display: 'flex', gap: '4px' }}>
-                                <button className="btn btn-sm" onClick={() => setShowBarcodePrint(a)} title="Cetak Barcode"><i className="ti ti-printer" aria-hidden="true"></i></button>
-                                {isSuperAdmin && (
-                                  <button className="btn btn-sm btn-warn" onClick={() => handleStartEditAsset(a)} title="Edit"><i className="ti ti-edit" aria-hidden="true"></i></button>
-                                )}
-                                {a.status === 'Tersedia' ? (
-                                  <button className="btn btn-sm btn-ok" onClick={() => handleQuickBorrowAsset(a)} title="Pinjam"><i className="ti ti-hand-finger" aria-hidden="true"></i> Pinjam</button>
-                                ) : (
-                                  <button className="btn btn-sm" disabled style={{ opacity: 0.6, cursor: 'not-allowed' }}><i className="ti ti-ban" aria-hidden="true"></i> Pinjam</button>
-                                )}
-                                {isSuperAdmin && <button className="btn btn-sm btn-no" onClick={() => handleDeleteAsset(a.id)} title="Hapus"><i className="ti ti-trash" aria-hidden="true"></i></button>}
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
+                        {filteredAndSortedAssets.map(a => {
+                          const isSelected = selectedAsset && selectedAsset.id === a.id;
+                          return (
+                            <tr 
+                              key={a.id} 
+                              onClick={() => setSelectedAssetId(a.id)}
+                              className={isSelected ? 'active-row' : ''}
+                              style={{ cursor: 'pointer', transition: 'background 0.15s' }}
+                            >
+                              <td style={{ fontFamily: 'monospace', fontSize: '11.5px', fontWeight: 'bold' }}>{a.code}</td>
+                              <td style={{ fontWeight: '600' }}>{a.name}</td>
+                              <td><span className="type-chip">{a.category}</span></td>
+                              <td>
+                                <span className={`asset-cond-badge cond-${a.condition.toLowerCase()}`}>
+                                  {a.condition}
+                                </span>
+                              </td>
+                              <td>
+                                <span className={`chip chip-${a.status === 'Tersedia' ? 'ok' : 'no'}`} style={{ fontSize: '11px', padding: '2px 8px', fontWeight: 'bold' }}>
+                                  {a.status}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
                         {filteredAndSortedAssets.length === 0 && (
                           <tr>
-                            <td colSpan="6" style={{ textAlign: 'center', padding: '24px', color: 'var(--mu)' }}>Tidak ada aset yang cocok dengan kriteria pencarian.</td>
+                            <td colSpan="5" style={{ textAlign: 'center', padding: '36px', color: 'var(--mu)' }}>
+                              <i className="ti ti-box" style={{ fontSize: '32px', display: 'block', marginBottom: '8px', color: 'var(--hi)' }}></i>
+                              Tidak ada aset yang cocok dengan kriteria pencarian.
+                            </td>
                           </tr>
                         )}
                       </tbody>
                     </table>
                   </div>
-                )}
-              </div>
-
-              {/* Right Column: Dynamic Administrative Registration or visual borrowing guide */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {isSuperAdmin ? (
-                  <div className="card animate" style={{ padding: '18px' }}>
-                    <div className="sec-title" style={{ marginBottom: '12px' }}>
-                      <i className="ti ti-box" aria-hidden="true"></i> Registrasi Aset Baru
-                    </div>
-                    <form onSubmit={handleAddAsset}>
-                      <div className="form-group" style={{ marginBottom: '10px' }}>
-                        <label>Kode Register Aset (Unique Code)</label>
-                        <input placeholder="cth: BPN-AST-0005" value={newAssetCode} onChange={(e) => setNewAssetCode(e.target.value)} required />
-                      </div>
-                      <div className="form-group" style={{ marginBottom: '10px' }}>
-                        <label>Nama Aset / Spesifikasi Barang</label>
-                        <input placeholder="cth: MacBook Pro 16 M3 Max" value={newAssetName} onChange={(e) => setNewAssetName(e.target.value)} required />
-                      </div>
-                      <div className="form-group" style={{ marginBottom: '12px' }}>
-                        <label>Kategori Inventaris</label>
-                        <select value={newAssetCat} onChange={(e) => setNewAssetCat(e.target.value)} style={{ height: '34px' }}>
-                          <option value="Elektronik">Elektronik</option>
-                          <option value="Kendaraan">Kendaraan</option>
-                          <option value="Perabot">Perabot</option>
-                          <option value="Perlengkapan">Perlengkapan</option>
-                        </select>
-                      </div>
-                      <button className="btn btn-primary" type="submit" style={{ width: '100%', height: '36px' }}>
-                        <i className="ti ti-plus" aria-hidden="true"></i> Daftarkan Aset Baru
-                      </button>
-                    </form>
-                  </div>
-                ) : null}
-
-                {/* Highly intuitive step-by-step guidance banner */}
-                <div className="card" style={{ padding: '18px', border: '1px solid var(--bd2)', borderRadius: '12px' }}>
-                  <div className="sec-title" style={{ marginBottom: '12px', color: 'var(--blu)' }}>
-                    <i className="ti ti-help-circle" aria-hidden="true"></i> Panduan Alur Peminjaman Aset
-                  </div>
-                  <div style={{ fontSize: '13px', display: 'flex', flexDirection: 'column', gap: '12px', color: 'var(--mu)', lineHeight: '1.5' }}>
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
-                      <span className="step-number">1</span>
-                      <span>Temukan aset berstatus <strong>Tersedia</strong> di dalam katalog di sebelah kiri. Gunakan filter pencarian agar lebih cepat.</span>
-                    </div>
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
-                      <span className="step-number">2</span>
-                      <span>Klik tombol <strong>Pinjam</strong>. Sistem akan mengisi Kode & Nama Aset secara otomatis di form pengajuan formal.</span>
-                    </div>
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
-                      <span className="step-number">3</span>
-                      <span>Isi alasan peminjaman dan tanggal kembali, lalu kirim tiket. Silakan ambil barang fisik setelah tiket Anda disetujui!</span>
-                    </div>
-                  </div>
                 </div>
-              </div>
-            </div>
 
-            {/* Barcode stickers generator modal */}
-            {showBarcodePrint && (
-              <div className="modal-wrap">
-                <div className="modal" style={{ width: '320px', textAlign: 'center' }}>
-                  <div className="modal-title">Cetak Barcode Register Aset</div>
-                  <div className="modal-sub">Model Label: 30x50mm Thermal Sticker</div>
-                  <div style={{ background: '#fff', padding: '16px', borderRadius: '8px', display: 'inline-block', border: '1px solid #ddd', margin: '10px 0' }}>
-                    <div style={{ fontSize: '11px', color: '#333', fontWeight: 'bold', marginBottom: '4px' }}>GA PROPERTY OF GATICKET</div>
-                    <div style={{ display: 'flex', justifyContent: 'center', height: '40px', gap: '2px', background: '#000', padding: '4px 10px', width: '160px', margin: '0 auto' }}>
-                      <div style={{ width: '3px', background: '#fff' }}></div><div style={{ width: '1px', background: '#fff' }}></div>
-                      <div style={{ width: '4px', background: '#fff' }}></div><div style={{ width: '2px', background: '#fff' }}></div>
-                      <div style={{ width: '2px', background: '#fff' }}></div><div style={{ width: '3px', background: '#fff' }}></div>
-                      <div style={{ width: '1px', background: '#fff' }}></div><div style={{ width: '4px', background: '#fff' }}></div>
+                {/* Right Column: Asset Details Sheet / Specs / Actions Panel & Add Asset */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  {/* Details Sheet */}
+                  <div className="card animate" style={{ padding: '20px', border: '1px solid var(--bd3)' }}>
+                    {selectedAsset ? (() => {
+                      let catColorClass = selectedAsset.category === 'Elektronik' ? 'cat-elec' 
+                                       : selectedAsset.category === 'Kendaraan' ? 'cat-car' 
+                                       : selectedAsset.category === 'Perabot' ? 'cat-furn' 
+                                       : 'cat-prop';
+                      
+                      let catIcon = selectedAsset.category === 'Elektronik' ? 'ti-device-laptop'
+                                  : selectedAsset.category === 'Kendaraan' ? 'ti-car'
+                                  : selectedAsset.category === 'Perabot' ? 'ti-chair'
+                                  : 'ti-package';
+                      
+                      return (
+                        <div>
+                          {/* Detail Header */}
+                          <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '16px', borderBottom: '1px solid var(--bd2)', paddingBottom: '12px' }}>
+                            <div className={`asset-avatar ${catColorClass}`} style={{ width: '40px', height: '40px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                              <i className={`ti ${catIcon}`} style={{ fontSize: '20px' }}></i>
+                            </div>
+                            <div style={{ minWidth: 0, flex: 1 }}>
+                              <h3 style={{ fontSize: '15px', fontWeight: 'bold', color: 'var(--tx)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selectedAsset.name}</h3>
+                              <span style={{ fontSize: '11px', color: 'var(--mu)', marginTop: '2px', display: 'inline-block' }}>Kategori: <strong>{selectedAsset.category}</strong></span>
+                            </div>
+                          </div>
+
+                          {/* Specs Key-Values */}
+                          <div className="detail-kv" style={{ display: 'grid', gridTemplateColumns: '100px 1fr', gap: '10px 12px', fontSize: '13px', background: 'var(--surf2)', padding: '14px', borderRadius: '8px', border: '0.5px solid var(--bd2)', marginBottom: '18px' }}>
+                            <span style={{ color: 'var(--mu)', fontWeight: 'bold' }}>Kode Register</span>
+                            <span style={{ fontFamily: 'monospace', fontWeight: 'bold', color: 'var(--blu)' }}>{selectedAsset.code}</span>
+
+                            <span style={{ color: 'var(--mu)', fontWeight: 'bold' }}>Kondisi Fisik</span>
+                            <span>
+                              <span className={`asset-cond-badge cond-${selectedAsset.condition.toLowerCase()}`}>
+                                {selectedAsset.condition}
+                              </span>
+                            </span>
+
+                            <span style={{ color: 'var(--mu)', fontWeight: 'bold' }}>Status GA</span>
+                            <span>
+                              <span className={`chip chip-${selectedAsset.status === 'Tersedia' ? 'ok' : 'no'}`} style={{ fontWeight: 'bold', fontSize: '11px', padding: '2px 8px' }}>
+                                {selectedAsset.status}
+                              </span>
+                            </span>
+                          </div>
+
+                          {/* Actions Area */}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            {selectedAsset.status === 'Tersedia' ? (
+                              <button 
+                                className="btn btn-ok pulsing-btn" 
+                                onClick={() => handleQuickBorrowAsset(selectedAsset)}
+                                style={{ width: '100%', height: '38px', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+                              >
+                                <i className="ti ti-hand-finger"></i> Pinjam Aset Sekarang
+                              </button>
+                            ) : (
+                              <button 
+                                className="btn" 
+                                disabled 
+                                style={{ width: '100%', height: '38px', opacity: 0.5, cursor: 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', background: 'var(--surf3)' }}
+                              >
+                                <i className="ti ti-ban"></i> Aset {selectedAsset.status}
+                              </button>
+                            )}
+
+                            <button 
+                              className="btn" 
+                              onClick={() => setShowBarcodePrint(selectedAsset)}
+                              style={{ width: '100%', height: '34px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', background: 'var(--surf2)', border: '1px solid var(--bd2)' }}
+                            >
+                              <i className="ti ti-printer"></i> Cetak Label Barcode
+                            </button>
+
+                            {isSuperAdmin && (
+                              <div style={{ display: 'flex', gap: '6px', marginTop: '4px', borderTop: '1px solid var(--bd2)', paddingTop: '10px' }}>
+                                <button 
+                                  className="btn btn-warn" 
+                                  onClick={() => handleStartEditAsset(selectedAsset)}
+                                  style={{ flex: 1, height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}
+                                >
+                                  <i className="ti ti-edit"></i> Edit Aset
+                                </button>
+                                <button 
+                                  className="btn btn-no" 
+                                  onClick={() => handleDeleteAsset(selectedAsset.id)}
+                                  style={{ flex: 1, height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}
+                                >
+                                  <i className="ti ti-trash"></i> Hapus
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })() : (
+                      <div className="empty" style={{ padding: '24px 10px', color: 'var(--mu)', textAlign: 'center' }}>
+                        <i className="ti ti-box" style={{ fontSize: '36px', color: 'var(--hi)', display: 'block', marginBottom: '8px' }}></i>
+                        Pilih aset dari daftar di sebelah kiri untuk melihat rincian spesifikasi, status ketersediaan, atau melakukan peminjaman langsung.
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Super Admin: Registrasi Aset Baru */}
+                  {isSuperAdmin && (
+                    <div className="card animate" style={{ padding: '18px' }}>
+                      <div className="sec-title" style={{ marginBottom: '12px' }}>
+                        <i className="ti ti-box" aria-hidden="true"></i> Registrasi Aset Baru
+                      </div>
+                      <form onSubmit={handleAddAsset}>
+                        <div className="form-group" style={{ marginBottom: '10px' }}>
+                          <label>Kode Register Aset (Unique Code)</label>
+                          <input placeholder="cth: BPN-AST-0005" value={newAssetCode} onChange={(e) => setNewAssetCode(e.target.value)} required />
+                        </div>
+                        <div className="form-group" style={{ marginBottom: '10px' }}>
+                          <label>Nama Aset / Spesifikasi Barang</label>
+                          <input placeholder="cth: MacBook Pro 16 M3 Max" value={newAssetName} onChange={(e) => setNewAssetName(e.target.value)} required />
+                        </div>
+                        <div className="form-group" style={{ marginBottom: '12px' }}>
+                          <label>Kategori Inventaris</label>
+                          <select value={newAssetCat} onChange={(e) => setNewAssetCat(e.target.value)} style={{ height: '34px' }}>
+                            <option value="Elektronik">Elektronik</option>
+                            <option value="Kendaraan">Kendaraan</option>
+                            <option value="Perabot">Perabot</option>
+                            <option value="Perlengkapan">Perlengkapan</option>
+                          </select>
+                        </div>
+                        <button className="btn btn-primary" type="submit" style={{ width: '100%', height: '36px' }}>
+                          <i className="ti ti-plus" aria-hidden="true"></i> Daftarkan Aset Baru
+                        </button>
+                      </form>
                     </div>
-                    <div style={{ fontFamily: 'monospace', fontSize: '11px', color: '#000', fontWeight: 'bold', marginTop: '6px' }}>{showBarcodePrint.code}</div>
-                    <div style={{ fontSize: '10px', color: '#666', marginTop: '2px' }}>{showBarcodePrint.name}</div>
-                  </div>
-                  <div className="modal-footer">
-                    <button className="btn btn-sm" onClick={() => setShowBarcodePrint(null)}>Tutup</button>
-                    <button className="btn btn-sm btn-primary" onClick={() => { addToast('ok', 'Mengirim perintah cetak sticker...', 'ti-printer'); setShowBarcodePrint(null); }}>Cetak Sekarang</button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* --- 8. JADWAL & SLOT TAB --- */}
-        {currentTab === 'jadwal' && (
-          <div className="page-view animate">
-            <div className="pg-hd">
-              <div>
-                <h1 className="pg-title">Reservasi & Jadwal Slot Operasional</h1>
-                <div className="pg-sub">Manajemen waktu pemesanan fasilitas ruangan rapat dan armada kendaraan secara real-time</div>
-              </div>
-            </div>
-
-            {/* Centralised control panel */}
-            <div className="card" style={{ padding: '16px 20px', marginBottom: '16px', display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <label style={{ margin: 0 }}>Kategori Fasilitas</label>
-                <div style={{ display: 'flex', gap: '6px' }}>
-                  <button 
-                    className={`btn btn-sm ${selectedResourceType === 'room' ? 'btn-primary' : ''}`}
-                    onClick={() => {
-                      setSelectedResourceType('room');
-                      setSelectedResourceName('Ruang Rapat A');
-                    }}
-                  >
-                    <i className="ti ti-door" aria-hidden="true"></i> Ruangan
-                  </button>
-                  <button 
-                    className={`btn btn-sm ${selectedResourceType === 'vehicle' ? 'btn-primary' : ''}`}
-                    onClick={() => {
-                      setSelectedResourceType('vehicle');
-                      setSelectedResourceName('Avanza B-1234-AB');
-                    }}
-                  >
-                    <i className="ti ti-car" aria-hidden="true"></i> Kendaraan
-                  </button>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', minWidth: '200px' }}>
-                <label style={{ margin: 0 }}>Pilih Fasilitas / Unit</label>
-                <select 
-                  value={selectedResourceName} 
-                  onChange={(e) => setSelectedResourceName(e.target.value)}
-                  style={{ height: '32px', padding: '4px 8px' }}
-                >
-                  {selectedResourceType === 'room' ? (
-                    <>
-                      <option value="Ruang Rapat A">Ruang Rapat A (Kapasitas 10)</option>
-                      <option value="Ruang Rapat B">Ruang Rapat B (Kapasitas 20)</option>
-                      <option value="Ruang Direksi">Ruang Direksi (Kapasitas 8)</option>
-                      <option value="Aula Utama">Aula Utama (Kapasitas 50)</option>
-                    </>
-                  ) : (
-                    <>
-                      <option value="Avanza B-1234-AB">Toyota Avanza (B-1234-AB)</option>
-                      <option value="Honda Jazz">Honda Jazz (Operasional)</option>
-                      <option value="Innova B-9012-EF">Toyota Innova (B-9012-EF)</option>
-                    </>
                   )}
-                </select>
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', minWidth: '160px' }}>
-                <label style={{ margin: 0 }}>Tanggal Booking</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <button 
-                    className="btn btn-sm" 
-                    onClick={() => {
-                      const d = new Date(selectedDate);
-                      d.setDate(d.getDate() - 1);
-                      setSelectedDate(d.toISOString().substring(0, 10));
-                    }}
-                  >
-                    <i className="ti ti-chevron-left" aria-hidden="true"></i>
-                  </button>
-                  <input 
-                    type="date" 
-                    value={selectedDate} 
-                    onChange={(e) => setSelectedDate(e.target.value)} 
-                    style={{ width: '140px', height: '32px', padding: '4px' }}
-                  />
-                  <button 
-                    className="btn btn-sm"
-                    onClick={() => {
-                      const d = new Date(selectedDate);
-                      d.setDate(d.getDate() + 1);
-                      setSelectedDate(d.toISOString().substring(0, 10));
-                    }}
-                  >
-                    <i className="ti ti-chevron-right" aria-hidden="true"></i>
-                  </button>
                 </div>
               </div>
-            </div>
 
-            {/* Split Calendar grid and sidebar info */}
-            <div className="split">
-              {/* Time Slots Cards Grid */}
-              <div className="card" style={{ padding: '20px' }}>
-                <div className="sec-title" style={{ marginBottom: '16px' }}>
-                  <i className="ti ti-clock" aria-hidden="true"></i> 
-                  Slot Waktu Ketersediaan — {new Date(selectedDate).toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
-                </div>
-                
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  {[
-                    '08:00 - 10:00',
-                    '10:00 - 12:00',
-                    '12:00 - 14:00',
-                    '14:00 - 16:00',
-                    '16:00 - 18:00'
-                  ].map(slotTime => {
-                    const slotKey = `${selectedDate}_${slotTime}`;
-                    const match = slots.find(s => s.category === selectedResourceType && s.item_name === selectedResourceName && s.slot_key === slotKey);
-                    const isBusy = match && match.is_booked;
+              {/* Barcode / QR Code stickers generator modal */}
+              {showBarcodePrint && (
+                <div className="modal-wrap">
+                  <div className="modal animate" style={{ width: '340px', textAlign: 'center' }}>
+                    <div className="modal-title">Cetak Label Register Aset</div>
+                    <div className="modal-sub">Model Label: 30x50mm Thermal Sticker</div>
                     
-                    return (
+                    {/* Format Toggle Tab Selector */}
+                    <div style={{ display: 'flex', gap: '2px', background: 'var(--surf2)', padding: '2px', borderRadius: '6px', border: '1px solid var(--bd2)', marginBottom: '14px' }}>
+                      <button 
+                        type="button"
+                        className={`btn btn-sm ${stickerFormat === 'barcode' ? 'btn-primary' : ''}`}
+                        onClick={() => setStickerFormat('barcode')}
+                        style={{ flex: 1, padding: '4px 0', border: 'none', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}
+                      >
+                        <i className="ti ti-barcode"></i> Barcode
+                      </button>
+                      <button 
+                        type="button"
+                        className={`btn btn-sm ${stickerFormat === 'qrcode' ? 'btn-primary' : ''}`}
+                        onClick={() => setStickerFormat('qrcode')}
+                        style={{ flex: 1, padding: '4px 0', border: 'none', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}
+                      >
+                        <i className="ti ti-qrcode"></i> QR Code
+                      </button>
+                    </div>
+
+                    <div style={{ background: '#fff', padding: '16px', borderRadius: '8px', display: 'inline-block', border: '1px solid #ddd', margin: '5px 0 15px', width: '100%', boxSizing: 'border-box', boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+                      <div style={{ fontSize: '10px', color: '#111', fontWeight: 'bold', marginBottom: '8px', letterSpacing: '0.5px' }}>PROPERTY OF GENERAL AFFAIRS</div>
+                      
+                      {stickerFormat === 'qrcode' ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', margin: '8px 0' }}>
+                          <img 
+                            src={`https://api.qrserver.com/v1/create-qr-code/?size=130x130&data=${encodeURIComponent(showBarcodePrint.code)}&color=000000&bgcolor=ffffff`}
+                            alt={showBarcodePrint.code}
+                            style={{ width: '130px', height: '130px', border: '1px solid #eee', padding: '6px', background: '#fff', borderRadius: '4px', display: 'block' }}
+                          />
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', margin: '20px 0 10px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'center', height: '40px', gap: '2px', background: '#000', padding: '4px 10px', width: '160px', margin: '0 auto' }}>
+                            <div style={{ width: '3px', background: '#fff' }}></div><div style={{ width: '1px', background: '#fff' }}></div>
+                            <div style={{ width: '4px', background: '#fff' }}></div><div style={{ width: '2px', background: '#fff' }}></div>
+                            <div style={{ width: '2px', background: '#fff' }}></div><div style={{ width: '3px', background: '#fff' }}></div>
+                            <div style={{ width: '1px', background: '#fff' }}></div><div style={{ width: '4px', background: '#fff' }}></div>
+                          </div>
+                        </div>
+                      )}
+                      
+                      <div style={{ fontFamily: 'monospace', fontSize: '12px', color: '#000', fontWeight: 'bold', marginTop: '10px', letterSpacing: '0.5px' }}>{showBarcodePrint.code}</div>
+                      <div style={{ fontSize: '11px', color: '#444', marginTop: '4px', fontWeight: '500', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{showBarcodePrint.name}</div>
+                    </div>
+                    
+                    <div className="modal-footer" style={{ margin: 0, paddingTop: '12px' }}>
+                      <button className="btn btn-sm" onClick={() => setShowBarcodePrint(null)}>Tutup</button>
+                      <button className="btn btn-sm btn-primary" onClick={() => { addToast('ok', `Mengirim perintah cetak label ${stickerFormat.toUpperCase()}...`, 'ti-printer'); setShowBarcodePrint(null); }}>Cetak Sekarang</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+            {currentTab === 'jadwal' && (() => {
+          // Time overlap helper functions
+          const parseTimeToMinutes = (tStr) => {
+            if (!tStr) return 0;
+            const parts = tStr.split(':');
+            if (parts.length < 2) return 0;
+            return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+          };
+
+          const isTimeOverlap = (startA, endA, startB, endB) => {
+            const sA = parseTimeToMinutes(startA);
+            const eA = parseTimeToMinutes(endA);
+            const sB = parseTimeToMinutes(startB);
+            const eB = parseTimeToMinutes(endB);
+            return sA < eB && sB < eA;
+          };
+
+          const isResourceMatch = (ticketType, ticketDetail, resourceType, resourceName) => {
+            if (ticketType !== resourceType) return false;
+            if (!ticketDetail) return false;
+            
+            if (resourceType === 'room') {
+              const ticketRuang = String(ticketDetail.ruang || '').toLowerCase();
+              const resName = String(resourceName || '').toLowerCase();
+              return ticketRuang.includes(resName) || resName.includes(ticketRuang);
+            } else if (resourceType === 'vehicle') {
+              const ticketKend = String(ticketDetail.kend || '').toLowerCase();
+              const resName = String(resourceName || '').toLowerCase();
+              return ticketKend.includes(resName) || resName.includes(ticketKend) || 
+                     (resName.includes('avanza') && ticketKend.includes('avanza')) ||
+                     (resName.includes('jazz') && ticketKend.includes('jazz')) ||
+                     (resName.includes('innova') && ticketKend.includes('innova'));
+            }
+            return false;
+          };
+
+          // Filter tickets to find fully approved (ACC) bookings on the selected date for this resource
+          const approvedBookings = tickets.filter(t => {
+            if (t.status !== 'approved' && t.status !== 'completed') return false;
+            
+            const isTypeMatch = (t.type === 'meeting' && selectedResourceType === 'room') || 
+                                (t.type === 'kendaraan' && selectedResourceType === 'vehicle');
+            if (!isTypeMatch) return false;
+            
+            if (t.type === 'meeting') {
+              return t.detail && t.detail.tgl === selectedDate && isResourceMatch(t.type, t.detail, selectedResourceType, selectedResourceName);
+            } else if (t.type === 'kendaraan') {
+              return t.detail && t.detail.mulai <= selectedDate && selectedDate <= t.detail.selesai && isResourceMatch(t.type, t.detail, selectedResourceType, selectedResourceName);
+            }
+            return false;
+          });
+
+          // Compile a list of all active approved bookings to display
+          const displayBookings = [];
+
+          // 1. Add booked items from DB slots
+          slots.forEach(s => {
+            if (s.category === selectedResourceType && s.item_name === selectedResourceName && s.is_booked && s.slot_key.startsWith(selectedDate)) {
+              const timePart = s.slot_key.substring(11);
+              displayBookings.push({
+                id: `db-${s.id}`,
+                timeRange: timePart,
+                user: 'Petugas GA',
+                dept: 'General Affairs',
+                desc: 'Reservasi Slot Statis GA',
+                status: 'approved'
+              });
+            }
+          });
+
+          // 2. Add approved tickets
+          approvedBookings.forEach(t => {
+            const timeRange = t.type === 'meeting' 
+              ? `${t.detail.mulai} - ${t.detail.selesai}`
+              : `Seluruh Hari (Peminjaman Kendaraan)`;
+            
+            displayBookings.push({
+              id: t.id,
+              timeRange: timeRange,
+              user: t.user_name,
+              dept: t.user_dept,
+              desc: t.description || (t.type === 'meeting' ? t.detail.acara : t.detail.tujuan),
+              status: t.status
+            });
+          });
+
+          return (
+            <div className="page-view animate">
+              <div className="pg-hd">
+                <div>
+                  <h1 className="pg-title">Reservasi & Jadwal Slot Operasional</h1>
+                  <div className="pg-sub">Manajemen waktu pemesanan fasilitas ruangan rapat dan armada kendaraan secara real-time</div>
+                </div>
+              </div>
+
+              {/* Centralised control panel */}
+              <div className="card" style={{ padding: '16px 20px', marginBottom: '16px', display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <label style={{ margin: 0 }}>Kategori Fasilitas</label>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button 
+                      className={`btn btn-sm ${selectedResourceType === 'room' ? 'btn-primary' : ''}`}
+                      onClick={() => {
+                        setSelectedResourceType('room');
+                        setSelectedResourceName('Ruang Rapat A');
+                      }}
+                    >
+                      <i className="ti ti-door" aria-hidden="true"></i> Ruangan
+                    </button>
+                    <button 
+                      className={`btn btn-sm ${selectedResourceType === 'vehicle' ? 'btn-primary' : ''}`}
+                      onClick={() => {
+                        setSelectedResourceType('vehicle');
+                        setSelectedResourceName('Avanza B-1234-AB');
+                      }}
+                    >
+                      <i className="ti ti-car" aria-hidden="true"></i> Kendaraan
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', minWidth: '200px' }}>
+                  <label style={{ margin: 0 }}>Pilih Fasilitas / Unit</label>
+                  <select 
+                    value={selectedResourceName} 
+                    onChange={(e) => setSelectedResourceName(e.target.value)}
+                    style={{ height: '32px', padding: '4px 8px' }}
+                  >
+                    {selectedResourceType === 'room' ? (
+                      <>
+                        <option value="Ruang Rapat A">Ruang Rapat A (Kapasitas 10)</option>
+                        <option value="Ruang Rapat B">Ruang Rapat B (Kapasitas 20)</option>
+                        <option value="Ruang Direksi">Ruang Direksi (Kapasitas 8)</option>
+                        <option value="Aula Utama">Aula Utama (Kapasitas 50)</option>
+                      </>
+                    ) : (
+                      <>
+                        <option value="Avanza B-1234-AB">Toyota Avanza (B-1234-AB)</option>
+                        <option value="Honda Jazz">Honda Jazz (Operasional)</option>
+                        <option value="Innova B-9012-EF">Toyota Innova (B-9012-EF)</option>
+                      </>
+                    )}
+                  </select>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', minWidth: '160px' }}>
+                  <label style={{ margin: 0 }}>Tanggal Booking</label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <button 
+                      className="btn btn-sm" 
+                      onClick={() => {
+                        const d = new Date(selectedDate);
+                        d.setDate(d.getDate() - 1);
+                        setSelectedDate(d.toISOString().substring(0, 10));
+                      }}
+                    >
+                      <i className="ti ti-chevron-left" aria-hidden="true"></i>
+                    </button>
+                    <input 
+                      type="date" 
+                      value={selectedDate} 
+                      onChange={(e) => setSelectedDate(e.target.value)} 
+                      style={{ width: '140px', height: '32px', padding: '4px' }}
+                    />
+                    <button 
+                      className="btn btn-sm"
+                      onClick={() => {
+                        const d = new Date(selectedDate);
+                        d.setDate(d.getDate() + 1);
+                        setSelectedDate(d.toISOString().substring(0, 10));
+                      }}
+                    >
+                      <i className="ti ti-chevron-right" aria-hidden="true"></i>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Split Calendar grid and sidebar info */}
+              <div className="split">
+                {/* Time Slots Cards Grid */}
+                <div className="card" style={{ padding: '20px' }}>
+                  <div className="sec-title" style={{ marginBottom: '16px', color: 'var(--blu)' }}>
+                    <i className="ti ti-calendar-event" aria-hidden="true"></i> 
+                    Daftar Peminjaman Aktif (Disetujui) — {new Date(selectedDate).toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+                  </div>
+                  
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {displayBookings.map(b => (
                       <div 
-                        className={`time-slot-card ${isBusy ? 'busy' : 'free'}`}
-                        key={slotTime}
+                        className="time-slot-card busy animate"
+                        key={b.id}
                         style={{
                           display: 'flex', 
                           justifyContent: 'space-between', 
                           alignItems: 'center',
                           padding: '14px 20px',
                           borderRadius: '12px',
-                          border: isBusy ? '1px solid var(--red-bd)' : '1px solid var(--grn-bd)',
-                          background: isBusy ? 'var(--red-bg)' : 'var(--grn-bg)',
+                          border: '1px solid var(--red-bd)',
+                          background: 'var(--red-bg)',
                           transition: 'all 0.2s'
                         }}
                       >
                         <div>
-                          <div style={{ fontSize: '14px', fontWeight: 'bold', color: isBusy ? 'var(--red-tx)' : 'var(--grn-tx)' }}>
-                            <i className="ti ti-alarm" aria-hidden="true" style={{ marginRight: '6px' }}></i> {slotTime}
+                          <div style={{ fontSize: '14px', fontWeight: 'bold', color: 'var(--red-tx)' }}>
+                            <i className="ti ti-alarm" aria-hidden="true" style={{ marginRight: '6px' }}></i> {b.timeRange}
                           </div>
-                          <div style={{ fontSize: '11px', color: 'var(--mu)', marginTop: '4px' }}>
-                            {isBusy ? 'Status: Tidak Tersedia (Sudah Dipesan)' : 'Status: Tersedia untuk Reservasi'}
+                          <div style={{ fontSize: '12px', color: 'var(--tx)', fontWeight: '600', marginTop: '6px' }}>
+                            Peminjam: <strong style={{ color: 'var(--red-tx)' }}>{b.user}</strong> ({b.dept})
+                          </div>
+                          <div style={{ fontSize: '11.5px', color: 'var(--mu)', marginTop: '2px' }}>
+                            Keperluan: <em>{b.desc}</em>
                           </div>
                         </div>
                         
                         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                          <span className={`chip ${isBusy ? 'chip-no' : 'chip-ok'}`}>
-                            {isBusy ? 'Terisi' : 'Tersedia'}
+                          <span className="chip chip-no" style={{ background: 'var(--red-bg)', color: 'var(--red-tx)', borderColor: 'var(--red-bd)', fontWeight: 'bold' }}>
+                            Terisi (ACC)
                           </span>
                           
-                          <button 
-                            className={`btn btn-sm ${isBusy ? 'btn-no' : 'btn-ok'}`}
-                            onClick={() => handleBookSlot(selectedResourceType, selectedResourceName, slotKey)}
-                            style={{ padding: '6px 12px' }}
-                          >
-                            {isBusy ? (
-                              currentUser.role === 'admin' ? 'Bebaskan Slot' : 'Terbooking'
-                            ) : (
-                              <>
-                                <i className="ti ti-circle-plus" aria-hidden="true"></i> Booking
-                              </>
-                            )}
-                          </button>
+                          {b.id.startsWith('db-') && currentUser.role === 'admin' && (
+                            <button 
+                              className="btn btn-sm btn-no"
+                              onClick={() => {
+                                const dbId = parseInt(b.id.substring(3), 10);
+                                const matchSlot = slots.find(s => s.id === dbId);
+                                if (matchSlot) {
+                                  handleBookSlot(selectedResourceType, selectedResourceName, matchSlot.slot_key);
+                                }
+                              }}
+                              style={{ padding: '6px 12px' }}
+                            >
+                              Bebaskan
+                            </button>
+                          )}
                         </div>
                       </div>
-                    );
-                  })}
+                    ))}
+                    
+                    {displayBookings.length === 0 && (
+                      <div className="empty" style={{ background: 'var(--grn-bg)', color: 'var(--grn-tx)', border: '1px solid var(--grn-bd)', borderRadius: '12px', padding: '32px', textAlign: 'center' }}>
+                        <i className="ti ti-circle-check" aria-hidden="true" style={{ color: 'var(--grn)', fontSize: '36px', marginBottom: '8px', display: 'block' }}></i>
+                        <div style={{ fontWeight: 'bold', fontSize: '15px' }}>Semua Slot Waktu Tersedia</div>
+                        <div style={{ fontSize: '12px', color: 'var(--grn-tx)', marginTop: '4px' }}>
+                          Belum ada peminjaman resmi yang disetujui (ACC) untuk {selectedResourceName} pada tanggal ini. Unit sepenuhnya siap digunakan!
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
 
               {/* Booking helper sidebar */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -2751,7 +2962,8 @@ export default function App() {
               </div>
             </div>
           </div>
-        )}
+        );
+      })()}
 
         {/* --- 9. LAPORAN TAB --- */}
         {currentTab === 'laporan' && (
@@ -3494,6 +3706,122 @@ export default function App() {
           </div>
         </div>
       )}
+      {/* --- ASSET SCANNER MODAL (CONTROL CENTER) --- */}
+      {showScannerModal && (() => {
+        const handleScanSubmit = (e) => {
+          if (e) e.preventDefault();
+          const code = scannerInputVal.trim();
+          if (!code) return;
+
+          const match = assets.find(a => a.code.toLowerCase() === code.toLowerCase() || a.name.toLowerCase() === code.toLowerCase());
+          if (match) {
+            playScanBeep(true);
+            setSelectedAssetId(match.id);
+            addToast('ok', `Pindai Berhasil! Menemukan ${match.name} (${match.code})`, 'ti-scan');
+            setShowScannerModal(false);
+          } else {
+            playScanBeep(false);
+            addToast('err', `Aset dengan register/nama "${code}" tidak terdaftar!`, 'ti-x');
+          }
+        };
+
+        const handleSimulateQuickScan = (asset) => {
+          playScanBeep(true);
+          setSelectedAssetId(asset.id);
+          addToast('ok', `Pindai Berhasil! Menemukan ${asset.name} (${asset.code})`, 'ti-scan');
+          setShowScannerModal(false);
+        };
+
+        return (
+          <div className="modal-wrap" style={{ zIndex: 350 }}>
+            <div className="modal animate" style={{ width: '480px', background: 'var(--surf)', padding: '24px', border: '1px solid var(--bd3)' }}>
+              
+              {/* Scanner Header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', borderBottom: '1px solid var(--bd2)', paddingBottom: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <i className="ti ti-scan" style={{ fontSize: '20px', color: 'var(--blu)' }}></i>
+                  <span style={{ fontSize: '16px', fontWeight: 'bold', color: 'var(--tx)' }}>Asset Scanner Control Center</span>
+                </div>
+                <button 
+                  type="button" 
+                  className="btn btn-sm" 
+                  onClick={() => setShowScannerModal(false)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--mu)', padding: '4px' }}
+                >
+                  <i className="ti ti-x" style={{ fontSize: '16px' }}></i>
+                </button>
+              </div>
+
+              {/* Simulated Camera Viewfinder Frame */}
+              <div style={{ position: 'relative', width: '100%', height: '200px', background: '#09090b', borderRadius: '8px', overflow: 'hidden', border: '2px solid var(--bd3)', marginBottom: '16px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+                
+                {/* Viewfinder Neon Corners */}
+                <div style={{ position: 'absolute', top: '10px', left: '10px', width: '20px', height: '20px', borderTop: '3px solid var(--blu)', borderLeft: '3px solid var(--blu)' }}></div>
+                <div style={{ position: 'absolute', top: '10px', right: '10px', width: '20px', height: '20px', borderTop: '3px solid var(--blu)', borderRight: '3px solid var(--blu)' }}></div>
+                <div style={{ position: 'absolute', bottom: '10px', left: '10px', width: '20px', height: '20px', borderBottom: '3px solid var(--blu)', borderLeft: '3px solid var(--blu)' }}></div>
+                <div style={{ position: 'absolute', bottom: '10px', right: '10px', width: '20px', height: '20px', borderBottom: '3px solid var(--blu)', borderRight: '3px solid var(--blu)' }}></div>
+
+                {/* Moving Scanning Laser */}
+                <div className="scanner-laser-line"></div>
+
+                <div style={{ color: 'rgba(255,255,255,0.4)', textAlign: 'center', fontSize: '11px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', zIndex: 2 }}>
+                  <i className="ti ti-qrcode" style={{ fontSize: '42px', color: 'var(--blu)', opacity: 0.8 }}></i>
+                  <span style={{ fontFamily: 'monospace', letterSpacing: '1px', color: 'var(--mu)', fontWeight: 'bold' }}>CAMERA VIEW // 60 FPS // SCANNER DECODING</span>
+                  <span style={{ fontSize: '9px', color: '#10b981', background: 'rgba(16,185,129,0.1)', padding: '2px 8px', borderRadius: '4px', border: '0.5px solid rgba(16,185,129,0.2)', fontWeight: 'bold' }}>SENSING ACTIVE — DEKATKAN LABEL REGISTER</span>
+                </div>
+              </div>
+
+              {/* Gun Barcode Scanner & Text Manual Input */}
+              <form onSubmit={handleScanSubmit} style={{ marginBottom: '16px' }}>
+                <div className="form-group">
+                  <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>Hardware Barcode Gun / Input Manual</span>
+                    <span style={{ fontSize: '10px', color: 'var(--blu)', fontWeight: 'bold' }}><i className="ti ti-keyboard"></i> Arahkan & Tembak Gun Scanner (Enter)</span>
+                  </label>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <input 
+                      type="text" 
+                      placeholder="Pindai label aset atau masukkan kode register..." 
+                      value={scannerInputVal}
+                      onChange={(e) => setScannerInputVal(e.target.value)}
+                      required
+                      autoFocus
+                      style={{ height: '36px', background: 'var(--surf2)' }}
+                    />
+                    <button type="submit" className="btn btn-primary" style={{ height: '36px', padding: '0 16px', fontWeight: 'bold' }}>
+                      Pindai
+                    </button>
+                  </div>
+                </div>
+              </form>
+
+              {/* Fast Simulated demo sweeping clicks */}
+              <div style={{ background: 'var(--surf2)', padding: '14px', borderRadius: '8px', border: '1px solid var(--bd2)' }}>
+                <div style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--mu)', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Simulasi Cepat (Demo Mode Pindai)
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                  {assets.slice(0, 4).map(asset => (
+                    <button 
+                      key={asset.id} 
+                      type="button" 
+                      className="btn btn-sm"
+                      onClick={() => handleSimulateQuickScan(asset)}
+                      style={{ background: 'var(--surf)', padding: '4px 10px', border: '1px solid var(--bd2)', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px', fontWeight: '500' }}
+                    >
+                      <i className="ti ti-scan"></i> {asset.code}
+                    </button>
+                  ))}
+                  {assets.length === 0 && (
+                    <div style={{ fontSize: '11px', color: 'var(--mu)' }}>Tidak ada aset terdaftar untuk disimulasikan.</div>
+                  )}
+                </div>
+              </div>
+
+            </div>
+          </div>
+        );
+      })()}
 
       {/* --- TOASTS STACK --- */}
       <div className="toast-stack">
@@ -3502,11 +3830,12 @@ export default function App() {
             <i className={`ti ${t.icon}`} aria-hidden="true"></i>
             <span style={{ flex: 1 }}>{t.msg}</span>
             <button 
-              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--mu)', padding: '2px', lineHeight: 1 }}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--mu)', padding: '2px', lineHeight: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
               onClick={() => setToasts(prev => prev.filter(x => x.id !== t.id))}
             >
               <i className="ti ti-x" aria-hidden="true" style={{ fontSize: '13px' }}></i>
             </button>
+            <div className="toast-progress"></div>
           </div>
         ))}
       </div>
